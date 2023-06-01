@@ -5,15 +5,14 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-	"strings"
 
 	_ "github.com/lib/pq" // Import PostgreSQL driver
-
-	"github.com/jmoiron/sqlx"
 )
 
 // Global variable at the package level, it is accessible from all files within the same package
-var DB *sqlx.DB
+
+// internal DB. This will be coverted into a DB later
+var DB []Post
 
 /*
 Encapsulation refers to the practice of bundling related data and
@@ -26,71 +25,63 @@ App is a struct that encapsulates a *sqlx.DB pointer.
 We encapsulate the database connection in a struct App
 */
 type App struct {
-	DB *sqlx.DB
+	DB []Post
 }
 
-type User struct {
-	ID   int    `json:"id"`
-	Name string `json:"name"`
+type Post struct {
+	ID       int    `json:"id"`
+	Title    string `json:"title"`
+	Link     string `json:"link"`
+	Username string `json:"username"`
 }
 
-// convert to a method of App struct
-// New createUser method on App struct
-func (app *App) createUser(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func printDB(db []Post) {
+	fmt.Println("DB Contents:")
+	for _, post := range db {
+		fmt.Printf("ID: %d, Title: %s, Link: %s, Username: %s\n", post.ID, post.Title, post.Link, post.Username)
+	}
+}
+
+func (app *App) handlePosts(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodPost {
+		// store the decoded JSON data representing a Post object
+		var newPost Post
+
+		// The json package to decode the JSON data from the request body (r.Body) into the newPost variable.
+		// The Decode method decodes the JSON data and returns an error if there was any issue during decoding.
+		err := json.NewDecoder(r.Body).Decode(&newPost)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		app.DB = append(app.DB, newPost)
+		printDB(app.DB)
+	} else {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
+
 	}
-
-	// Get IP address of the client that connected to your server.
-	// The clinet may be src client, proxy, or a load balancer.
-	ip := r.RemoteAddr
-
-	// If the request came through a proxy, RemoteAddr might contain the IP:Port, so let's split it:
-	ip = strings.Split(ip, ":")[0]
-
-	// Another way to get the IP if it came through a proxy is to check the "X-Forwarded-For" header:
-	if forwarded := r.Header.Get("X-Forwarded-For"); forwarded != "" {
-		ip = forwarded // This could be a comma-separated list of IPs, the client's IP is the first one
-	}
-
-	fmt.Printf("Client IP Address: %s\n", ip)
-
-	var u User
-	err := json.NewDecoder(r.Body).Decode(&u)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
-	_, err = app.DB.NamedExec(`INSERT INTO users (name) VALUES (:name)`, &u)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
-	w.WriteHeader(http.StatusCreated)
-}
-
-/*
-The InitDB method is defined on the App struct, so it can be called on instances of App.
-This encapsulates the database connection and initialization within the App struct.
-
-You can also move the createUser handler function into this struct and turn
-it into a method, and you can add any other application-specific data to the App struct.
-This can help keep your code organized and allow you to easily share data within your
-application without using global variables
-*/
-func (app *App) initDB(dataSourceName string) {
-	var err error
-	app.DB, err = sqlx.Connect("postgres", dataSourceName)
-	if err != nil {
-		log.Fatalf("Unable to connect to database: %v\n", err)
-	}
-	defer DB.Close()
 }
 
 func main() {
 	app := &App{}
-	app.initDB("user=username password=password dbname=dbname sslmode=disable")
-	http.HandleFunc("/user", app.createUser)
-	http.ListenAndServe(":8080", nil)
+
+	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		fmt.Fprintln(w, "Hello, World!")
+	})
+
+	// Resource for this API is post. Post contain comments
+	http.HandleFunc("/v1/posts/", app.handlePosts)
+
+	// IP address and port
+	// Docker NOTE: To make the server accessible from
+	// outside the container, you need to bind it to all network interfaces (0.0.0.0) instead.
+	addr := "0.0.0.0:8080"
+	fmt.Printf("Server is running on %s\n", addr)
+	err := http.ListenAndServe(addr, nil)
+	if err != nil {
+		log.Fatal(err)
+	}
+
 }
