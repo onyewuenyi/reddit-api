@@ -5,10 +5,11 @@ import (
 	"fmt"
 	"log"
 	"net/http"
-
-	_ "github.com/lib/pq" // Import PostgreSQL driver
+	"os"
+	"time"
 
 	"github.com/jmoiron/sqlx"
+	_ "github.com/lib/pq" // Import PostgreSQL driver
 )
 
 // Global variable at the package level, it is accessible from all files within the same package
@@ -28,34 +29,39 @@ type App struct {
 	DB *sqlx.DB
 }
 
+type Users struct {
+	Id           int    `db:"id"`
+	Username     string `db:"username"`
+	Date_created string `db:"date_created"` // Corrected database column name
+	Karma        string `db:"karma"`
+}
+
 type Post struct {
-	PostID   int    `db:"post_id"`
-	Username string `db:"username"`
-	Title    string `db:"title"`
-	Link     string `db:"link"`
-	Upvotes  int    `db:"upvotes"`
-	Content  string `db:"content"`
+	Id       int       `db:"id"`
+	Link     string    `db:"link"`
+	Title    string    `db:"title"`
+	User_id  int       `db:"user_id"`
+	PostDate time.Time `db:"post_date" sql:"timestamptz"`
 }
 
-// Get all posts GET/api/posts/
-func (app *App) getAllPosts(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet {
-
-	}
-
+type Comment struct {
+	Id           int    `db:"id"`
+	Post_id      int    `db:"post_id"`
+	Text         string `db:"text"`
+	User_id      int    `db:"user_id"`
+	Comment_date string `db:"comment_date"`
 }
 
-// convert to a method of App struct
-// POST /v1/posts
-// GET /v1/posts/:id
-// POST /v1/posts/:id
-// POST /v1/posts/:id/resume
-// DELETE /v1/posts/:id
-// GET /v1/posts
-// GET /v1/posts/search
+type Replies struct {
+	Id         int    `db:"id"`
+	Comment_id int    `db:"comment_id"`
+	Text       string `db:"text"`
+	User_id    int    `db:"user_id"`
+	Reply_date string `db:"reply_date"`
+}
 
 /*
-http method GET endpoint "/healthcheck" -> 200
+http method GET endpoint /healthcheck -> 200
 */
 func (app *App) healthCheck(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet {
@@ -65,49 +71,100 @@ func (app *App) healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
-func (app *App) createPost(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodPost {
+func (app *App) handlePost(w http.ResponseWriter, r *http.Request) {
+	/*
+		Retrive posts from db and store in a slice posts
+		Set res content type
+		Encode posts slice as JSON
+		Wr to res writer
+	*/
+	if r.Method == http.MethodGet {
+		log.Println("Handling GET posts")
+		queryParameters := r.URL.Query()
+		id := queryParameters.Get("id")
+		if id != "" {
+			// make network req to retreive post with id
+			var post Post
+			query := "SELECT * FROM post WHERE id = $1"
+			err := app.DB.Get(&post, query, id)
+			if err != nil {
+
+			}
+
+			// set header req type that I will send
+
+		} else {
+			// Retrive all post in store it in posts, which is a list of Post structs
+			var posts []Post
+			query := "SELECT * FROM posts"
+			err := app.DB.Select(&posts, query)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				log.Println("Error retrieving posts", err)
+				return
+			}
+			// in http spec it is recommended to set header before writing
+			// Set res headers
+			w.Header().Set("Content-Type", "application/json")
+			// Set the res status to 200 since I am retrieving data
+			w.WriteHeader(http.StatusOK)
+
+			// Convert posts to json and wr res
+			err = json.NewEncoder(w).Encode(posts)
+
+			// Return http status 500 if an error occured from encoding
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+		}
+	} else if r.Method == http.MethodPost {
+		var post Post
+		err := json.NewDecoder(r.Body).Decode(&post)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+
+		if post.Link == "" {
+			http.Error(w, "Link cannot be empty", http.StatusBadRequest)
+			return
+		}
+		if post.Title == "" {
+			http.Error(w, "Title cannot be empty", http.StatusBadRequest)
+			return
+		}
+		if post.User_id == 0 {
+			http.Error(w, "User_id cannot be empty", http.StatusBadRequest)
+			return
+		}
+
+		_, err = app.DB.NamedExec(`INSERT INTO posts (title, user_id, link) VALUES (:title, :user_id, :link)`, &post)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		w.WriteHeader(http.StatusCreated)
+	} else {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
-
-	// Val input data before inserting it into the database to
-	// prevent errors and security vulnerabilities
-
-	var post Post
-	err := json.NewDecoder(r.Body).Decode(&post)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusBadRequest)
-		return
-	}
+	// Ensure that resources like the database connection are cleaned up if an err occurs
 	defer r.Body.Close()
+}
 
-	// Body val
-	if post.Username == "" {
-		http.Error(w, "Username cannot be empty", http.StatusBadRequest)
-		return
-	}
-	if post.Title == "" {
-		http.Error(w, "Title cannot be empty", http.StatusBadRequest)
-		return
-	}
-	if post.Link == "" {
-		http.Error(w, "Link cannot be empty", http.StatusBadRequest)
-		return
-	}
+func (app *App) commentHandler(w http.ResponseWriter, r *http.Request) {
+	if r.Method == http.MethodGet {
 
-	_, err = app.DB.NamedExec(`INSERT INTO posts (username, title, link, upvotes, content) VALUES (:username, :title, :link, :upvotes, :content)`, &post)
-	if err != nil {
-		http.Error(w, err.Error(), http.StatusInternalServerError)
-		return
-	}
+	} else if r.Method == http.MethodPost {
+		// Post comment for a specific post
+		// Edit a comment for a specific post
 
-	w.WriteHeader(http.StatusCreated)
+	}
 }
 
 func (app *App) initDB() {
 	var err error
-	app.DB, err = sqlx.Connect("postgres", "postgres://postgres:postgrespw@localhost:55000/postgres?sslmode=disable")
+	app.DB, err = sqlx.Connect("postgres", "postgres://postgres:postgrespw@localhost:55001/postgres?sslmode=disable")
 	if err != nil {
 		// TODO: update log.Fatalf
 		log.Fatalf("Unable to connect to database: %v\n", err)
@@ -122,21 +179,21 @@ func (app *App) closeDB() {
 }
 
 func main() {
+	// init
+	log.SetOutput(os.Stdout)
+	log.SetPrefix("Reddit-API")
 	app := &App{}
 	app.initDB()
 	defer app.closeDB()
 
-	http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		fmt.Fprint(w, "Hello, World!")
-	})
-
 	http.HandleFunc("/healthcheck", app.healthCheck)
-	http.HandleFunc("/v1/posts", app.createPost)
+	http.HandleFunc("/v1/posts", app.handlePost)
+	http.HandleFunc("/v1/posts/{id}", app.handlePost)
+	// http.HandleFunc("/v1/comments", app.CreateComment)
 	fmt.Println("Server is running on http://localhost:8080")
 
 	err := http.ListenAndServe(":8080", nil)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
-
 }

@@ -6,8 +6,10 @@ import (
 	"testing"
 )
 
-func TestHealthcheckHandler(t *testing.T) {
-	app := &App{}
+app := &App{}
+
+func TestHealthCheckHandler(t *testing.T) {
+	
 
 	// Create http req
 	req, err := http.NewRequest("GET", "/healthcheck", nil)
@@ -33,3 +35,8 @@ func TestHealthcheckHandler(t *testing.T) {
 		t.Errorf("healthCheck handler returned unexpected body: got %v want %v", rr.Body.String(), expected)
 	}
 }
+
+
+// func TestcreatePostHandler(t *testing.T) {
+// 	req, err := http.NewRequest("POST")
+// }
