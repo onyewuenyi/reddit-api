@@ -1,13 +1,16 @@
 package main
 
 import (
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strconv"
 	"time"
 
+	"github.com/gorilla/mux"
 	"github.com/jmoiron/sqlx"
 	_ "github.com/lib/pq" // Import PostgreSQL driver
 )
@@ -71,30 +74,174 @@ func (app *App) healthCheck(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 }
 
+func (app *App) handleGetPosts(w http.ResponseWriter, r *http.Request) {
+	log.Println("Handling GET /v1/posts")
+	var posts []Post
+	query := "SELECT * FROM posts"
+	err := app.DB.Select(&posts, query)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		log.Println("Error retrieving posts", err)
+		return
+	}
+	// Set the res status to 200 since I am retrieving data
+	w.WriteHeader(http.StatusOK)
+
+	// in http spec it is recommended to set header before writing
+	// Set res headers
+	w.Header().Set("Content-Type", "application/json")
+
+	// Convert posts to json and wr res
+	err = json.NewEncoder(w).Encode(posts)
+
+	// Return http status 500 if an error occured from encoding
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+}
+
+func (app *App) handleCreatePost(w http.ResponseWriter, r *http.Request) {
+	log.Println("Handling POST /v1/posts")
+	var post Post
+	err := json.NewDecoder(r.Body).Decode(&post)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+
+	if post.Link == "" {
+		http.Error(w, "Link cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if post.Title == "" {
+		http.Error(w, "Title cannot be empty", http.StatusBadRequest)
+		return
+	}
+	if post.User_id == 0 {
+		http.Error(w, "User_id cannot be empty", http.StatusBadRequest)
+		return
+	}
+
+	_, err = app.DB.NamedExec(`INSERT INTO posts (title, user_id, link) VALUES (:title, :user_id, :link)`, &post)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	w.WriteHeader(http.StatusCreated)
+}
+
+
+func (app *App) handleGetPost(w http.ResponseWriter, r *http.Request) {
+	log.Println("Handling GET posts")
+	vars := mux.Vars(r)
+	id := vars["id"]
+	if id == "" {
+		msg := "Missing ID in query parameter"
+		log.Printf(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+	
+	idInt, err := strconv.Atoi(id)
+	if err != nil {
+		msg := "Invalid ID"
+		log.Printf("%s: %v", msg, err)
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	// make network req to retreive post with id
+	var post Post
+	query := "SELECT * FROM post WHERE id = $1"
+	err = app.DB.Get(&post, query, idInt)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			log.Printf("Post with ID %d not found.", idInt)
+		} else {
+			log.Printf("Error retrieving post: %v", err)
+		}
+	}
+	// set header req type that I will send
+	w.Header().Set("Content-Type", "application/json")
+	w.WriteHeader(http.StatusOK)
+	err = json.NewEncoder(w).Encode(post)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+	}
+}
+
+
+func (app *App) handleDeletePost(w http.ResponseWriter, r *http.Request) {
+	log.Println("Handling DELETE /v1/posts/{id}")
+	vars := mux.Vars(r)
+	id := vars["id"]
+	if id == "" {
+		msg := "Missing ID in query parameter"
+		log.Printf(msg)
+		http.Error(w, msg, http.StatusBadRequest)
+		return
+	}
+
+	idInt, err := strconv.Atoi(id)
+	if err != nil {
+		msg := "Invalid ID"
+		log.Printf("%s: %v", msg, err)
+		http.Error(w, "Invalid ID", http.StatusBadRequest)
+		return
+	}
+
+	query := `DELETE FROM posts WHERE id = :id`
+	_, err = DB.NamedExec(query, map[string]interface{}{"id": idInt})
+	if err != nil {
+		log.Printf("Error deleting post with id %d: %v", idInt, err)
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	log.Printf("Post with ID %d deleted succesfully", idInt)
+	w.WriteHeader(http.StatusNoContent)
+}
+
 func (app *App) handlePost(w http.ResponseWriter, r *http.Request) {
-	/*
-		Retrive posts from db and store in a slice posts
-		Set res content type
-		Encode posts slice as JSON
-		Wr to res writer
-	*/
+	log.Printf("Ex handlePost handler")
 	if r.Method == http.MethodGet {
 		log.Println("Handling GET posts")
-		queryParameters := r.URL.Query()
-		id := queryParameters.Get("id")
+		vars := mux.Vars(r)
+		id := vars["id"]
+
+		// Get post
 		if id != "" {
+			idInt, err := strconv.Atoi(id)
+			if err != nil {
+				msg := "Invalid ID"
+				log.Printf("%s: %v", msg, err)
+				http.Error(w, "Invalid ID", http.StatusBadRequest)
+				return
+			}
+
 			// make network req to retreive post with id
 			var post Post
 			query := "SELECT * FROM post WHERE id = $1"
-			err := app.DB.Get(&post, query, id)
+			err = app.DB.Get(&post, query, idInt)
 			if err != nil {
-
+				if err == sql.ErrNoRows {
+					log.Printf("Post with ID %d not found.", idInt)
+				} else {
+					log.Printf("Error retrieving post: %v", err)
+				}
 			}
-
 			// set header req type that I will send
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusOK)
+			err = json.NewEncoder(w).Encode(post)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+			}
+			// Get all posts
+		} 
+		
+		else {
 
-		} else {
-			// Retrive all post in store it in posts, which is a list of Post structs
 			var posts []Post
 			query := "SELECT * FROM posts"
 			err := app.DB.Select(&posts, query)
@@ -117,34 +264,37 @@ func (app *App) handlePost(w http.ResponseWriter, r *http.Request) {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 			}
 		}
-	} else if r.Method == http.MethodPost {
-		var post Post
-		err := json.NewDecoder(r.Body).Decode(&post)
-		if err != nil {
-			http.Error(w, err.Error(), http.StatusBadRequest)
+	} 
+	else if r.Method == http.MethodDelete {
+		log.Println("Handling DELETE posts")
+		vars := mux.Vars(r)
+		id := vars["id"]
+		if id == "" {
+			msg := "Missing ID in query parameter"
+			log.Printf(msg)
+			http.Error(w, msg, http.StatusBadRequest)
 			return
 		}
 
-		if post.Link == "" {
-			http.Error(w, "Link cannot be empty", http.StatusBadRequest)
-			return
-		}
-		if post.Title == "" {
-			http.Error(w, "Title cannot be empty", http.StatusBadRequest)
-			return
-		}
-		if post.User_id == 0 {
-			http.Error(w, "User_id cannot be empty", http.StatusBadRequest)
+		idInt, err := strconv.Atoi(id)
+		if err != nil {
+			msg := "Invalid ID"
+			log.Printf("%s: %v", msg, err)
+			http.Error(w, "Invalid ID", http.StatusBadRequest)
 			return
 		}
 
-		_, err = app.DB.NamedExec(`INSERT INTO posts (title, user_id, link) VALUES (:title, :user_id, :link)`, &post)
+		query := `DELETE FROM posts WHERE id = :id`
+		_, err = DB.NamedExec(query, map[string]interface{}{"id": idInt})
 		if err != nil {
+			log.Printf("Error deleting post with id %d: %v", idInt, err)
 			http.Error(w, err.Error(), http.StatusInternalServerError)
 			return
 		}
-		w.WriteHeader(http.StatusCreated)
-	} else {
+		log.Printf("Post with ID %d deleted succesfully", idInt)
+		w.WriteHeader(http.StatusNoContent)
+	} 
+	else {
 		http.Error(w, http.StatusText(http.StatusMethodNotAllowed), http.StatusMethodNotAllowed)
 		return
 	}
@@ -186,13 +336,18 @@ func main() {
 	app.initDB()
 	defer app.closeDB()
 
-	http.HandleFunc("/healthcheck", app.healthCheck)
-	http.HandleFunc("/v1/posts", app.handlePost)
-	http.HandleFunc("/v1/posts/{id}", app.handlePost)
-	// http.HandleFunc("/v1/comments", app.CreateComment)
+	router := mux.NewRouter()
+	router.HandleFunc("/healthcheck", app.healthCheck).Methods("GET")
+	router.HandleFunc("/v1/posts", app.handleGetPosts).Methods("GET")
+	router.HandleFunc("/v1/posts", app.handleCreatePost).Methods("POST")
+	router.HandleFunc("/v1/posts/{id}", app.handleGetPost).Methods("GET")
+	router.HandleFunc("/v1/posts/{id}", app.handleDeletePost).Methods("DELETE")
+	router.HandleFunc("/v1/posts/{id}/comments", app.handleGetComments).Methods("GET")
+	router.HandleFunc("/v1/posts/{id}/comments", app.handleCreateComment).Methods("POST")
+	router.HandleFunc("/v1/posts/{id}/comments/{cid}", app.handleUpdateComment).Methods("PUT")
 	fmt.Println("Server is running on http://localhost:8080")
 
-	err := http.ListenAndServe(":8080", nil)
+	err := http.ListenAndServe(":8080", router)
 	if err != nil {
 		log.Fatal("ListenAndServe: ", err)
 	}
